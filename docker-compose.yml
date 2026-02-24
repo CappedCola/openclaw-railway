@@ -1,0 +1,10 @@
+services:
+  openclaw:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.tmpdata:/data
+      - ./src:/app/src
+    env_file: .env.local
+    restart: unless-stopped

@@ -7,7 +7,7 @@ import path from "node:path";
 import express from "express";
 import httpProxy from "http-proxy";
 import pty from "node-pty";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const STATE_DIR =
@@ -83,6 +83,58 @@ const TUI_MAX_SESSION_MS = Number.parseInt(
   process.env.TUI_MAX_SESSION_MS ?? "1800000",
   10,
 );
+
+// ── Browser Manager (Playwright) ─────────────────────────────────────────────
+const ENABLE_BROWSER_PREVIEW = process.env.ENABLE_BROWSER_PREVIEW?.toLowerCase() !== 'false';
+const BROWSER_WIDTH = 1280;
+const BROWSER_HEIGHT = 800;
+
+let browserInstance = null;
+let browserPage = null;
+let browserCdpSession = null;
+const browserScreencastListeners = new Set();
+
+async function getBrowserPage() {
+  if (browserPage && !browserPage.isClosed()) return browserPage;
+  const { chromium } = await import('playwright-core');
+  browserInstance = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/usr/bin/chromium',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    headless: true,
+  });
+  const ctx = await browserInstance.newContext({ viewport: { width: BROWSER_WIDTH, height: BROWSER_HEIGHT } });
+  browserPage = await ctx.newPage();
+  await browserPage.goto('about:blank');
+  return browserPage;
+}
+
+async function startScreencast(wsClient) {
+  const page = await getBrowserPage();
+  if (!browserCdpSession) {
+    browserCdpSession = await page.context().newCDPSession(page);
+    await browserCdpSession.send('Page.startScreencast', { format: 'jpeg', quality: 50, maxWidth: BROWSER_WIDTH, maxHeight: BROWSER_HEIGHT });
+    browserCdpSession.on('Page.screencastFrame', async (params) => {
+      const msg = JSON.stringify({ type: 'frame', data: params.data, width: BROWSER_WIDTH, height: BROWSER_HEIGHT });
+      for (const ws of browserScreencastListeners) {
+        if (ws.readyState === ws.OPEN) ws.send(msg);
+      }
+      await browserCdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+    });
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) {
+        const navMsg = JSON.stringify({ type: 'nav', url: page.url(), title: '' });
+        for (const ws of browserScreencastListeners) {
+          if (ws.readyState === ws.OPEN) ws.send(navMsg);
+        }
+      }
+    });
+  }
+  browserScreencastListeners.add(wsClient);
+}
+
+function stopScreencastForClient(wsClient) {
+  browserScreencastListeners.delete(wsClient);
+}
 
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
@@ -1013,6 +1065,48 @@ function createTuiWebSocketServer(httpServer) {
   return wss;
 }
 
+function createBrowserWebSocketServer(httpServer) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on('connection', async (ws, req) => {
+    console.log('[browser-ws] client connected');
+    await startScreencast(ws);
+
+    if (browserPage) {
+      ws.send(JSON.stringify({ type: 'nav', url: browserPage.url() }));
+    }
+
+    ws.on('message', async (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        const page = await getBrowserPage();
+        if (msg.type === 'navigate') {
+          await page.goto(msg.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        } else if (msg.type === 'mousemove') {
+          await page.mouse.move(msg.x, msg.y);
+        } else if (msg.type === 'click') {
+          await page.mouse.click(msg.x, msg.y, { button: msg.button || 'left' });
+        } else if (msg.type === 'scroll') {
+          await page.mouse.wheel(msg.deltaX || 0, msg.deltaY || 0);
+        } else if (msg.type === 'keydown') {
+          await page.keyboard.press(msg.key).catch(() => {});
+        } else if (msg.type === 'type') {
+          await page.keyboard.type(msg.text).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[browser-ws] input error:', err.message);
+      }
+    });
+
+    ws.on('close', () => {
+      stopScreencastForClient(ws);
+      console.log('[browser-ws] client disconnected');
+    });
+  });
+
+  return wss;
+}
+
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
   ws: true,
@@ -1044,6 +1138,99 @@ proxy.on("proxyReq", (proxyReq, req, res) => {
 proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
   proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
 });
+
+// ── Dashboard API endpoints (must be registered before the catch-all proxy) ──
+
+async function callGatewayTool(tool, args = {}, sessionKey = "agent:main:main") {
+  const response = await fetch(
+    `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/tools/invoke`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ tool, action: "json", args, sessionKey }),
+    },
+  );
+  if (!response.ok) throw new Error(`Gateway tool call failed: ${response.status}`);
+  return response.json();
+}
+
+app.get("/api/events", requireSetupAuth, (req, res) => {
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+
+  const gatewayWs = new WebSocket(
+    `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`,
+    { headers: { Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}` } },
+  );
+
+  gatewayWs.on("message", (data) => {
+    res.write(`data: ${data}\n\n`);
+  });
+
+  gatewayWs.on("error", (err) => {
+    console.error("[api/events] gateway WebSocket error:", err.message);
+    res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+  });
+
+  gatewayWs.on("close", () => {
+    res.end();
+  });
+
+  req.on("close", () => {
+    gatewayWs.terminate();
+  });
+});
+
+app.get('/api/browser/status', requireSetupAuth, async (req, res) => {
+  if (!ENABLE_BROWSER_PREVIEW) return res.json({ enabled: false });
+  const running = browserPage && !browserPage.isClosed();
+  return res.json({
+    enabled: true,
+    running: !!running,
+    url: running ? browserPage.url() : null,
+  });
+});
+
+app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
+  try {
+    const data = await callGatewayTool("chat.history", { limit: 50 });
+    return res.json(data);
+  } catch (err) {
+    console.error("[api/chat/history]", err.message);
+    return res.status(502).json({ error: "Failed to fetch chat history from gateway" });
+  }
+});
+
+app.get("/api/soul", requireSetupAuth, (req, res) => {
+  const soulPath = path.join(WORKSPACE_DIR, "SOUL.md");
+  try {
+    const content = fs.readFileSync(soulPath, "utf8");
+    res.type("text/plain").send(content);
+  } catch {
+    res.status(404).type("text/plain").send("# SOUL.md not found\n");
+  }
+});
+
+app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: "message required" });
+  try {
+    const data = await callGatewayTool("agent.send", { message: message.trim() });
+    return res.json(data);
+  } catch (err) {
+    console.error("[api/chat/send]", err.message);
+    return res.status(502).json({ error: "Failed to send message to agent" });
+  }
+});
+
+// ── End dashboard API endpoints ──────────────────────────────────────────────
 
 app.use(async (req, res) => {
   if (!isConfigured() && !req.path.startsWith("/setup")) {
@@ -1099,6 +1286,7 @@ const server = app.listen(PORT, () => {
 });
 
 const tuiWss = createTuiWebSocketServer(server);
+const browserWss = createBrowserWebSocketServer(server);
 
 server.on("upgrade", async (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -1125,6 +1313,26 @@ server.on("upgrade", async (req, socket, head) => {
     tuiWss.handleUpgrade(req, socket, head, (ws) => {
       tuiWss.emit("connection", ws, req);
     });
+    return;
+  }
+
+  if (url.pathname === '/browser/ws') {
+    if (!ENABLE_BROWSER_PREVIEW) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const password = url.searchParams.get('password') || '';
+    const passwordHash = crypto.createHash('sha256').update(password).digest();
+    const expectedHash = crypto.createHash('sha256').update(SETUP_PASSWORD || '').digest();
+    if (!SETUP_PASSWORD || !crypto.timingSafeEqual(passwordHash, expectedHash)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    browserWss.handleUpgrade(req, socket, head, (ws) => browserWss.emit('connection', ws, req));
     return;
   }
 

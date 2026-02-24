@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-chown -R openclaw:openclaw /data
+chown -R openclaw:openclaw /data 2>/dev/null || true
 chmod 700 /data
 
 if [ ! -d /data/.linuxbrew ]; then
