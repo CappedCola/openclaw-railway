@@ -364,6 +364,7 @@ function requireSetupAuth(req, res, next) {
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
+app.use(express.text({ limit: "1mb" }));
 
 app.get("/healthz", async (_req, res) => {
   let gateway = "unconfigured";
@@ -1198,6 +1199,99 @@ app.get('/api/browser/status', requireSetupAuth, async (req, res) => {
   });
 });
 
+app.get("/api/soul", requireSetupAuth, async (_req, res) => {
+  const soulPath = path.join(WORKSPACE_DIR, "SOUL.md");
+  try {
+    const content = fs.readFileSync(soulPath, "utf8");
+    res.type("text/plain").send(content);
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return res.status(404).type("text/plain").send("SOUL.md not found");
+    }
+    res.status(500).type("text/plain").send(String(err));
+  }
+});
+
+app.put("/api/soul", requireSetupAuth, async (req, res) => {
+  const body = req.body;
+  const content = typeof body === "string" ? body : body?.content;
+  if (typeof content !== "string") {
+    return res.status(400).json({ ok: false, error: "Body must be plain text or { content: string }" });
+  }
+  const soulPath = path.join(WORKSPACE_DIR, "SOUL.md");
+  try {
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    fs.writeFileSync(soulPath, content, "utf8");
+    // Restart gateway async so it picks up the new SOUL.md without blocking the response
+    restartGateway().catch((err) => console.error("[api/soul] gateway restart error:", err.message));
+    res.json({ ok: true, restarting: true });
+  } catch (err) {
+    console.error("[api/soul] write error:", err);
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+app.post("/api/setup", requireSetupAuth, async (req, res) => {
+  try {
+    if (isConfigured()) {
+      await ensureGatewayRunning();
+      return res.json({ ok: true, message: "Already configured" });
+    }
+
+    const geminiKey = (req.body?.geminiApiKey || process.env.GEMINI_API_KEY || "").trim();
+    if (!geminiKey) {
+      return res.status(400).json({ ok: false, error: "GEMINI_API_KEY not set and not provided in request body" });
+    }
+
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+    console.log("[api/setup] Running programmatic onboarding...");
+
+    const onboardArgs = [
+      "onboard",
+      "--non-interactive",
+      "--accept-risk",
+      "--json",
+      "--no-install-daemon",
+      "--skip-health",
+      "--workspace", WORKSPACE_DIR,
+      "--gateway-bind", "loopback",
+      "--gateway-port", String(INTERNAL_GATEWAY_PORT),
+      "--gateway-auth", "token",
+      "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
+      "--flow", "quickstart",
+      "--auth-choice", "gemini-api-key",
+      "--gemini-api-key", geminiKey,
+    ];
+
+    const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
+    console.log(`[api/setup] onboard exit=${onboard.code} configured=${isConfigured()}`);
+
+    if (onboard.code !== 0 || !isConfigured()) {
+      return res.status(500).json({ ok: false, error: "Onboarding failed", output: onboard.output });
+    }
+
+    // Force gateway settings
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]']));
+
+    // Set model
+    const model = (req.body?.model || process.env.OPENCLAW_MODEL || "google/gemini-2.0-flash").trim();
+    await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", model]));
+    console.log(`[api/setup] model set to ${model}`);
+
+    await restartGateway();
+    console.log("[api/setup] Gateway started. Setup complete.");
+
+    return res.json({ ok: true, message: "Setup complete", model });
+  } catch (err) {
+    console.error("[api/setup] error:", err);
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
   try {
     const data = await callGatewayTool("chat.history", { limit: 50 });
@@ -1205,16 +1299,6 @@ app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
   } catch (err) {
     console.error("[api/chat/history]", err.message);
     return res.status(502).json({ error: "Failed to fetch chat history from gateway" });
-  }
-});
-
-app.get("/api/soul", requireSetupAuth, (req, res) => {
-  const soulPath = path.join(WORKSPACE_DIR, "SOUL.md");
-  try {
-    const content = fs.readFileSync(soulPath, "utf8");
-    res.type("text/plain").send(content);
-  } catch {
-    res.status(404).type("text/plain").send("# SOUL.md not found\n");
   }
 });
 

@@ -12,6 +12,26 @@ This is a Railway deployment wrapper for **OpenClaw** (an AI coding assistant pl
 
 The wrapper manages the OpenClaw lifecycle: onboarding → gateway startup → traffic proxying.
 
+## Consumer Product Context
+
+**This repo is one half of a consumer SaaS product.** The user-facing dashboard is the Next.js app located one directory up at `../nexus` (full path: `/Users/bzarnitz91/projects/nexus/nexus`).
+
+```
+/Users/bzarnitz91/projects/nexus/
+├── nexus/           ← Next.js dashboard (user-facing, deployed once)
+└── openclaw-fork/   ← This repo (Railway container, one per user)
+```
+
+**How they connect:**
+- The Next.js app provisions a new instance of this container on Railway for each user via the Railway GraphQL API
+- User-specific env vars (`USER_NAME`, `USER_GOALS`, `USER_TIMEZONE`, `USER_PROFESSION`, `GEMINI_API_KEY`) are injected at provisioning time
+- The Next.js dashboard communicates with this container via REST and WebSocket (see `nexus/src/app/api/agent/`)
+- The browser preview panel in the dashboard (`nexus/src/components/browser-preview.tsx`) streams from this container's `/browser/ws` WebSocket
+
+**Critical consequence:** The `/setup` wizard UI is **never shown to consumers**. Setup must happen programmatically via a `POST /api/setup` endpoint called by the Next.js provisioning route immediately after Railway spins up the container. No human interaction with `/setup` should ever be required.
+
+**AI provider:** All user containers use `google/gemini-2.0-flash` via a Gemini API key provisioned as `GEMINI_API_KEY` env var. Do not ask users to pick a provider.
+
 ## Development Commands
 
 ```bash

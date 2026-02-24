@@ -11,4 +11,11 @@ fi
 rm -rf /home/linuxbrew/.linuxbrew
 ln -sfn /data/.linuxbrew /home/linuxbrew/.linuxbrew
 
+# Run bootstrap to generate personalized workspace files if this is a
+# provisioned consumer container (USER_NAME or GEMINI_API_KEY is set).
+if [ -n "$USER_NAME" ] || [ -n "$GEMINI_API_KEY" ]; then
+  mkdir -p "${OPENCLAW_WORKSPACE_DIR:-/data/workspace}"
+  bash /app/scripts/bootstrap.sh
+fi
+
 exec gosu openclaw node src/server.js
