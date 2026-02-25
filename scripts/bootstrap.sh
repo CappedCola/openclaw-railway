@@ -93,4 +93,29 @@ AGENTSEOF
   echo "[bootstrap] Created AGENTS.md"
 fi
 
+# Initialize tasks.json if missing
+if [ ! -f "$WORKSPACE_DIR/tasks.json" ]; then
+  echo "[]" > "$WORKSPACE_DIR/tasks.json"
+  echo "[bootstrap] Created tasks.json"
+fi
+
+# Initialize schedules.json if missing
+if [ ! -f "$WORKSPACE_DIR/schedules.json" ]; then
+  echo "[]" > "$WORKSPACE_DIR/schedules.json"
+  echo "[bootstrap] Created schedules.json"
+fi
+
+# Initialize HEARTBEAT.md if missing
+if [ ! -f "$WORKSPACE_DIR/HEARTBEAT.md" ]; then
+  cat > "$WORKSPACE_DIR/HEARTBEAT.md" << 'EOF'
+# Heartbeat Tasks
+These run every 30 minutes when the agent is active.
+
+## Checks
+- Check tasks.json for any active tasks and work on the next pending one
+- Update memory with anything important from recent activity
+EOF
+  echo "[bootstrap] Created HEARTBEAT.md"
+fi
+
 echo "[bootstrap] Workspace ready at $WORKSPACE_DIR"

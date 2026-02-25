@@ -1618,35 +1618,6 @@ app.post("/api/browser/mode", requireSetupAuth, (req, res) => {
   browserMgr.mode = mode;
   res.json({ ok: true, mode });
 });
-app.use(async (req, res) => {
-  if (!isConfigured() && !req.path.startsWith("/setup")) {
-    return res.redirect("/setup");
-  }
-
-  if (isConfigured()) {
-    if (!isGatewayReady()) {
-      try {
-        await ensureGatewayRunning();
-      } catch {
-        return res
-          .status(503)
-          .sendFile(path.join(process.cwd(), "src", "public", "loading.html"));
-      }
-
-      if (!isGatewayReady()) {
-        return res
-          .status(503)
-          .sendFile(path.join(process.cwd(), "src", "public", "loading.html"));
-      }
-    }
-  }
-
-  if (req.path === "/openclaw" && !req.query.token) {
-    return res.redirect(`/openclaw?token=${OPENCLAW_GATEWAY_TOKEN}`);
-  }
-
-  return proxy.web(req, res, { target: GATEWAY_TARGET });
-});
 
 const server = app.listen(PORT, () => {
   console.log(`[wrapper] listening on port ${PORT}`);
