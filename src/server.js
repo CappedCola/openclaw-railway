@@ -1273,7 +1273,7 @@ async function callGatewayTool(tool, args = {}, sessionKey = "agent:main:main") 
         Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ tool, action: "json", args, sessionKey }),
+      body: JSON.stringify({ tool, action: "json", args: { ...args, sessionKey } }),
     },
   );
   if (!response.ok) throw new Error(`Gateway tool call failed: ${response.status}`);
@@ -1418,7 +1418,7 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
 
 app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
   try {
-    const data = await callGatewayTool("chat.history", { limit: 50 });
+    const data = await callGatewayTool("sessions_history", { limit: 50 });
     return res.json(data);
   } catch (err) {
     console.error("[api/chat/history]", err.message);
@@ -1430,7 +1430,15 @@ app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
   const { message } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: "message required" });
   try {
-    const data = await callGatewayTool("agent.send", { message: message.trim() });
+    const { stdout } = await new Promise((resolve, reject) => {
+      childProcess.execFile("openclaw", [
+        "agent", "--agent", "main", "--message", message.trim(), "--json",
+      ], { timeout: 120_000 }, (err, stdout, stderr) => {
+        if (err) return reject(err);
+        resolve({ stdout, stderr });
+      });
+    });
+    const data = JSON.parse(stdout);
     return res.json(data);
   } catch (err) {
     console.error("[api/chat/send]", err.message);
