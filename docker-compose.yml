@@ -1,5 +1,5 @@
 services:
-  openclaw:
+  nexus:
     build: .
     ports:
       - "8080:8080"

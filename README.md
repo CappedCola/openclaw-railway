@@ -1,4 +1,4 @@
-# OpenClaw Railway Template (1‑click deploy)
+# Nexus Railway Template
 
 ## Setup
 
@@ -18,7 +18,7 @@
 
 ## What you get
 
-- **OpenClaw Gateway + Control UI** (served at `/` and `/openclaw`)
+- **Nexus Gateway + Control UI** powered by OpenClaw (served at `/` and `/openclaw`)
 - A friendly **Setup Wizard** at `/setup` (protected by a password)
 - Optional **Web Terminal** at `/tui` for browser-based TUI access
 - Persistent state via **Railway Volume** (so config/credentials/memory survive redeploys)
@@ -80,7 +80,7 @@ The web TUI implements multiple security layers:
 ## Local testing
 
 ```bash
-docker build -t openclaw-railway-template .
+docker build -t nexus-railway-template .
 
 docker run --rm -p 8080:8080 \
   -e PORT=8080 \
@@ -89,7 +89,7 @@ docker run --rm -p 8080:8080 \
   -e OPENCLAW_STATE_DIR=/data/.openclaw \
   -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
   -v $(pwd)/.tmpdata:/data \
-  openclaw-railway-template
+  nexus-railway-template
 
 # Setup wizard: http://localhost:8080/setup (password: test)
 # Web terminal: http://localhost:8080/tui (after setup)
@@ -103,7 +103,7 @@ A: Go to `/setup` on your deployed instance. When prompted for credentials, use 
 
 **Q: I see "gateway disconnected" or authentication errors in the Control UI. What should I do?**
 
-A: Go back to `/setup` and click the "Open OpenClaw UI" button from there. The setup page passes the required auth token to the UI. Accessing the UI directly without the token will cause connection errors.
+A: Go back to `/setup` and click the "Open Nexus UI" button from there. The setup page passes the required auth token to the UI. Accessing the UI directly without the token will cause connection errors.
 
 **Q: I don't see the TUI option on the setup page.**
 
@@ -119,7 +119,7 @@ A: New browsers/devices need a one-time approval from the gateway. Go to `/setup
 
 **Q: How do I change the AI model after setup?**
 
-A: Use the OpenClaw CLI to switch models. Access the web terminal at `/tui` (if enabled) or SSH into your container and run:
+A: Use the openclaw CLI to switch models. Access the web terminal at `/tui` (if enabled) or SSH into your container and run:
 
 ```bash
 openclaw models set provider/model-id

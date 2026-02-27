@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a Railway deployment wrapper for **OpenClaw** (an AI coding assistant platform). It provides:
+This is a Railway deployment wrapper for **Nexus** (powered by OpenClaw, an AI coding assistant platform). It provides:
 
 - A web-based setup wizard at `/setup` (protected by `SETUP_PASSWORD`)
-- Automatic reverse proxy from public URL → internal OpenClaw gateway
+- Automatic reverse proxy from public URL → internal openclaw gateway
 - Persistent state via Railway Volume at `/data`
 
-The wrapper manages the OpenClaw lifecycle: onboarding → gateway startup → traffic proxying.
+The wrapper manages the openclaw lifecycle: onboarding → gateway startup → traffic proxying.
 
 ## Consumer Product Context
 
@@ -49,7 +49,7 @@ npm run lint
 
 ```bash
 # Build the container
-docker build -t openclaw-railway-template .
+docker build -t nexus-railway-template .
 
 # Run locally with volume
 docker run --rm -p 8080:8080 \
@@ -58,7 +58,7 @@ docker run --rm -p 8080:8080 \
   -e OPENCLAW_STATE_DIR=/data/.openclaw \
   -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
   -v $(pwd)/.tmpdata:/data \
-  openclaw-railway-template
+  nexus-railway-template
 
 # Access setup wizard
 open http://localhost:8080/setup  # password: test
@@ -183,7 +183,7 @@ Edit `buildOnboardArgs()` (src/server.js:442-496) to add new CLI flags or auth p
 - Template must mount a volume at `/data`
 - Must set `SETUP_PASSWORD` in Railway Variables
 - Public networking must be enabled (assigns `*.up.railway.app` domain)
-- OpenClaw is installed via `npm install -g openclaw@latest` during Docker build
+- openclaw is installed via `npm install -g openclaw@latest` during Docker build
 
 ## Serena Semantic Coding
 

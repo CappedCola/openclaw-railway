@@ -442,7 +442,7 @@ function requireSetupAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
   if (scheme !== "Basic" || !encoded) {
-    res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
+    res.set("WWW-Authenticate", 'Basic realm="Nexus Setup"');
     return res.status(401).send("Auth required");
   }
   const decoded = Buffer.from(encoded, "base64").toString("utf8");
@@ -452,7 +452,7 @@ function requireSetupAuth(req, res, next) {
   const expectedHash = crypto.createHash("sha256").update(SETUP_PASSWORD).digest();
   const isValid = crypto.timingSafeEqual(passwordHash, expectedHash);
   if (!isValid) {
-    res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
+    res.set("WWW-Authenticate", 'Basic realm="Nexus Setup"');
     return res.status(401).send("Invalid password");
   }
   return next();
@@ -976,7 +976,7 @@ app.post("/setup/api/devices/reject", requireSetupAuth, async (req, res) => {
 
 app.get("/setup/api/export", requireSetupAuth, async (_req, res) => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const zipName = `openclaw-export-${timestamp}.zip`;
+  const zipName = `nexus-export-${timestamp}.zip`;
   const tmpZip = path.join(os.tmpdir(), zipName);
 
   try {
@@ -1693,7 +1693,7 @@ server.on("upgrade", async (req, socket, head) => {
     }
 
     if (!verifyTuiAuth(req)) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"OpenClaw TUI\"\r\n\r\n");
+      socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Nexus TUI\"\r\n\r\n");
       socket.destroy();
       return;
     }
