@@ -1402,7 +1402,7 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]']));
 
     // Set model
-    const model = (req.body?.model || process.env.OPENCLAW_MODEL || "google/gemini-2.0-flash").trim();
+    const model = (req.body?.model || process.env.OPENCLAW_MODEL || "google/gemini-2.5-flash").trim();
     await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", model]));
     console.log(`[api/setup] model set to ${model}`);
 
