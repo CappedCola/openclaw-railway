@@ -1367,6 +1367,10 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: "GEMINI_API_KEY not set and not provided in request body" });
     }
 
+    // Collect additional provider keys (from request body or env vars)
+    const anthropicKey = (req.body?.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "").trim();
+    const openaiKey = (req.body?.openaiApiKey || process.env.OPENAI_API_KEY || "").trim();
+
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
@@ -1401,6 +1405,47 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]']));
 
+    // Register additional provider auth profiles so model switching works
+    // The env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY) are already in process.env
+    // and inherited by gateway/CLI subprocesses, but we need auth profiles in config.
+    const registeredProviders = ["google"];
+
+    if (anthropicKey) {
+      // Inject Anthropic auth profile into openclaw.json
+      const cfgPath = configPath();
+      try {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (!cfg.auth) cfg.auth = {};
+        if (!cfg.auth.profiles) cfg.auth.profiles = {};
+        cfg.auth.profiles["anthropic:default"] = { provider: "anthropic", mode: "token" };
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), "utf8");
+        // Ensure the env var is set for gateway subprocess
+        process.env.ANTHROPIC_API_KEY = anthropicKey;
+        registeredProviders.push("anthropic");
+        console.log("[api/setup] Registered Anthropic auth profile");
+      } catch (err) {
+        console.warn("[api/setup] Failed to register Anthropic profile:", err.message);
+      }
+    }
+
+    if (openaiKey) {
+      // Inject OpenAI auth profile into openclaw.json
+      const cfgPath = configPath();
+      try {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (!cfg.auth) cfg.auth = {};
+        if (!cfg.auth.profiles) cfg.auth.profiles = {};
+        cfg.auth.profiles["openai:default"] = { provider: "openai", mode: "token" };
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), "utf8");
+        // Ensure the env var is set for gateway subprocess
+        process.env.OPENAI_API_KEY = openaiKey;
+        registeredProviders.push("openai");
+        console.log("[api/setup] Registered OpenAI auth profile");
+      } catch (err) {
+        console.warn("[api/setup] Failed to register OpenAI profile:", err.message);
+      }
+    }
+
     // Set model
     const model = (req.body?.model || process.env.OPENCLAW_MODEL || "google/gemini-2.5-flash").trim();
     await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", model]));
@@ -1409,7 +1454,7 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
     await restartGateway();
     console.log("[api/setup] Gateway started. Setup complete.");
 
-    return res.json({ ok: true, message: "Setup complete", model });
+    return res.json({ ok: true, message: "Setup complete", model, providers: registeredProviders });
   } catch (err) {
     console.error("[api/setup] error:", err);
     return res.status(500).json({ ok: false, error: String(err) });
@@ -1428,6 +1473,43 @@ app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
 
 const AUTONOMOUS_MODEL = "google/gemini-2.5-flash";
 
+// Map model prefixes to provider auth profile names + env var keys
+const PROVIDER_MAP = {
+  anthropic: { profile: "anthropic:default", envKey: "ANTHROPIC_API_KEY", mode: "token" },
+  openai:    { profile: "openai:default",    envKey: "OPENAI_API_KEY",    mode: "token" },
+  google:    { profile: "google:default",     envKey: "GEMINI_API_KEY",    mode: "token" },
+};
+
+/**
+ * Ensure the auth profile for a given model's provider exists in openclaw.json.
+ * This is idempotent — safe to call on every request.
+ */
+function ensureAuthProfile(modelId) {
+  const provider = modelId.split("/")[0]; // e.g. "anthropic" from "anthropic/claude-opus-4.5"
+  const mapping = PROVIDER_MAP[provider];
+  if (!mapping) return; // unknown provider, skip
+
+  const apiKey = (process.env[mapping.envKey] || "").trim();
+  if (!apiKey) {
+    console.warn(`[ensureAuthProfile] No ${mapping.envKey} set — ${modelId} may fail`);
+    return;
+  }
+
+  try {
+    const cfgPath = configPath();
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    if (cfg?.auth?.profiles?.[mapping.profile]) return; // already exists
+
+    if (!cfg.auth) cfg.auth = {};
+    if (!cfg.auth.profiles) cfg.auth.profiles = {};
+    cfg.auth.profiles[mapping.profile] = { provider, mode: mapping.mode };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), "utf8");
+    console.log(`[ensureAuthProfile] Registered ${mapping.profile} for ${modelId}`);
+  } catch (err) {
+    console.warn(`[ensureAuthProfile] Failed for ${modelId}:`, err.message);
+  }
+}
+
 app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
   const { message, model } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: "message required" });
@@ -1438,16 +1520,24 @@ app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
   try {
     // Temporarily switch model for this chat response only
     if (needsModelSwitch) {
+      // Ensure auth profile exists for the requested provider before switching
+      ensureAuthProfile(chatModel);
+
       const setResult = await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", chatModel]));
       if (setResult.code !== 0) {
         console.warn(`[api/chat/send] models set ${chatModel} failed (code=${setResult.code}): ${setResult.output}`);
+        // If model switch failed, return error to frontend instead of silently using wrong model
+        return res.status(400).json({
+          error: `Failed to switch to ${chatModel}. Check that ${chatModel.split("/")[0].toUpperCase()}_API_KEY is configured.`,
+          code: "MODEL_SWITCH_FAILED",
+        });
       }
     }
 
     const { stdout } = await new Promise((resolve, reject) => {
       childProcess.execFile("openclaw", [
         "agent", "--agent", "main", "--message", message.trim(), "--json",
-      ], { timeout: 120_000 }, (err, stdout, stderr) => {
+      ], { timeout: 120_000, env: { ...process.env } }, (err, stdout, stderr) => {
         if (err) return reject(err);
         resolve({ stdout, stderr });
       });
@@ -1465,6 +1555,15 @@ app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
       });
     }
   }
+});
+
+// Return which providers have API keys configured so the frontend can grey-out unavailable models
+app.get("/api/models/available", requireSetupAuth, (_req, res) => {
+  const available = {};
+  for (const [provider, mapping] of Object.entries(PROVIDER_MAP)) {
+    available[provider] = !!(process.env[mapping.envKey] || "").trim();
+  }
+  res.json({ providers: available });
 });
 
 // ── End dashboard API endpoints ──────────────────────────────────────────────
