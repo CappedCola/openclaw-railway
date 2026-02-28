@@ -1671,6 +1671,125 @@ app.post("/api/folders", requireSetupAuth, async (req, res) => {
   }
 });
 
+// ── File Tree & File Operation Endpoints ──────────────────────────────────
+async function buildFileTree(dirPath, relativePath = "/") {
+  const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+  const tree = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+
+    const fullPath = path.join(dirPath, entry.name);
+    const itemPath = path.join(relativePath, entry.name);
+
+    if (entry.isDirectory()) {
+      const children = await buildFileTree(fullPath, itemPath);
+      tree.push({ name: entry.name, path: itemPath, type: "folder", children });
+    } else if (entry.isFile()) {
+      const stats = await fs.promises.stat(fullPath);
+      tree.push({
+        name: entry.name,
+        path: itemPath,
+        type: "file",
+        size: stats.size,
+        modified: stats.mtime.toISOString(),
+      });
+    }
+  }
+
+  return tree;
+}
+
+app.get("/api/workspace/tree", requireSetupAuth, async (req, res) => {
+  try {
+    const { path: reqPath, recursive } = req.query;
+    const basePath = reqPath && reqPath !== "/" ? path.join(WORKSPACE_DIR, reqPath) : WORKSPACE_DIR;
+
+    if (!basePath.startsWith(WORKSPACE_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const tree = recursive === "true"
+      ? await buildFileTree(basePath, reqPath || "/")
+      : await buildFileTree(basePath, reqPath || "/");
+
+    res.json(tree);
+  } catch (err) {
+    console.error("[/api/workspace/tree]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/files", requireSetupAuth, async (req, res) => {
+  try {
+    const reqPath = req.query.path;
+    if (!reqPath) {
+      return res.status(400).json({ error: "path query parameter required" });
+    }
+
+    const filePath = path.join(WORKSPACE_DIR, reqPath);
+
+    if (!filePath.startsWith(WORKSPACE_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const content = await fs.promises.readFile(filePath, "utf8");
+    res.json({ content, path: reqPath });
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return res.status(404).json({ error: "File not found" });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/files", requireSetupAuth, async (req, res) => {
+  try {
+    const { path: reqPath, content } = req.body;
+    if (!reqPath) {
+      return res.status(400).json({ error: "path required in body" });
+    }
+    if (typeof content !== "string") {
+      return res.status(400).json({ error: "content must be a string" });
+    }
+
+    const filePath = path.join(WORKSPACE_DIR, reqPath);
+
+    if (!filePath.startsWith(WORKSPACE_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, content, "utf8");
+    res.json({ ok: true, path: reqPath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/files", requireSetupAuth, async (req, res) => {
+  try {
+    const reqPath = req.query.path;
+    if (!reqPath) {
+      return res.status(400).json({ error: "path query parameter required" });
+    }
+
+    const filePath = path.join(WORKSPACE_DIR, reqPath);
+
+    if (!filePath.startsWith(WORKSPACE_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    await fs.promises.unlink(filePath);
+    res.json({ ok: true, path: reqPath });
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return res.status(404).json({ error: "File not found" });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Schedule Endpoints ─────────────────────────────────────────────────────
 app.get("/api/schedules", requireSetupAuth, async (_req, res) => {
   res.json(await readJsonFile(SCHEDULES_FILE()));
