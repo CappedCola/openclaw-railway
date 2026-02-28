@@ -1426,10 +1426,24 @@ app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
   }
 });
 
+const AUTONOMOUS_MODEL = "google/gemini-2.5-flash";
+
 app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
-  const { message } = req.body;
+  const { message, model } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: "message required" });
+
+  const chatModel = (model && typeof model === "string" && model.trim()) || AUTONOMOUS_MODEL;
+  const needsModelSwitch = chatModel !== AUTONOMOUS_MODEL;
+
   try {
+    // Temporarily switch model for this chat response only
+    if (needsModelSwitch) {
+      const setResult = await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", chatModel]));
+      if (setResult.code !== 0) {
+        console.warn(`[api/chat/send] models set ${chatModel} failed (code=${setResult.code}): ${setResult.output}`);
+      }
+    }
+
     const { stdout } = await new Promise((resolve, reject) => {
       childProcess.execFile("openclaw", [
         "agent", "--agent", "main", "--message", message.trim(), "--json",
@@ -1443,6 +1457,13 @@ app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
   } catch (err) {
     console.error("[api/chat/send]", err.message);
     return res.status(502).json({ error: "Failed to send message to agent" });
+  } finally {
+    // Always reset back to Flash so the autonomous agent never uses a premium model
+    if (needsModelSwitch) {
+      runCmd(OPENCLAW_NODE, clawArgs(["models", "set", AUTONOMOUS_MODEL])).catch((err) => {
+        console.warn(`[api/chat/send] failed to reset model to ${AUTONOMOUS_MODEL}:`, err.message);
+      });
+    }
   }
 });
 
