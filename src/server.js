@@ -1472,6 +1472,80 @@ app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
 });
 
 const AUTONOMOUS_MODEL = "google/gemini-2.5-flash";
+// Fallback used when the primary model hits rate limits (429).
+// gemini-2.0-flash shares the same API key but has a separate quota bucket.
+const FALLBACK_MODEL = "google/gemini-2.0-flash";
+
+/**
+ * Run `openclaw agent --message <msg>` with automatic retry on rate-limit (429).
+ *
+ * Strategy:
+ *  1. Try the requested model.
+ *  2. On 429 / resource-exhausted: exponential backoff (1s → 2s → 4s → 8s),
+ *     then fall back to FALLBACK_MODEL for the remainder of the retries.
+ *  3. Give up after MAX_RETRIES total attempts and surface the last error.
+ *
+ * Detection: openclaw exits non-zero and stdout/stderr contains "429",
+ * "RESOURCE_EXHAUSTED", or "rate limit".
+ */
+async function runAgentWithFallback(message, preferredModel) {
+  const MAX_RETRIES = 4;
+  const BASE_DELAY_MS = 1000;
+
+  let modelToUse = preferredModel || AUTONOMOUS_MODEL;
+  let usingFallback = false;
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    // Switch to the model we want for this attempt
+    await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", modelToUse])).catch(() => {});
+
+    const result = await new Promise((resolve) => {
+      childProcess.execFile(
+        "openclaw",
+        ["agent", "--agent", "main", "--message", message.trim(), "--json"],
+        { timeout: 120_000, env: { ...process.env } },
+        (err, stdout, stderr) => resolve({ err, stdout: stdout || "", stderr: stderr || "" }),
+      );
+    });
+
+    if (!result.err) {
+      // Success — parse and return
+      try {
+        return { ok: true, data: JSON.parse(result.stdout) };
+      } catch {
+        return { ok: true, data: { text: result.stdout } };
+      }
+    }
+
+    const combinedOutput = (result.stdout + result.stderr).toLowerCase();
+    const isRateLimit =
+      combinedOutput.includes("429") ||
+      combinedOutput.includes("resource_exhausted") ||
+      combinedOutput.includes("rate limit") ||
+      combinedOutput.includes("quota exceeded");
+
+    lastErr = result.err;
+
+    if (!isRateLimit) {
+      // Non-rate-limit error — fail immediately, no point retrying
+      return { ok: false, err: lastErr, output: result.stdout + result.stderr };
+    }
+
+    // Rate limited — switch to fallback on first hit
+    if (!usingFallback && modelToUse !== FALLBACK_MODEL) {
+      console.warn(`[agent] ${modelToUse} rate-limited, switching to fallback ${FALLBACK_MODEL}`);
+      modelToUse = FALLBACK_MODEL;
+      usingFallback = true;
+    }
+
+    const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+    console.warn(`[agent] Rate limited (attempt ${attempt + 1}/${MAX_RETRIES}), waiting ${delay}ms...`);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+
+  return { ok: false, err: lastErr, rateLimited: true };
+}
 
 // Map model prefixes to provider auth profile names + env var keys
 const PROVIDER_MAP = {
@@ -1534,21 +1608,22 @@ app.post("/api/chat/send", requireSetupAuth, async (req, res) => {
       }
     }
 
-    const { stdout } = await new Promise((resolve, reject) => {
-      childProcess.execFile("openclaw", [
-        "agent", "--agent", "main", "--message", message.trim(), "--json",
-      ], { timeout: 120_000, env: { ...process.env } }, (err, stdout, stderr) => {
-        if (err) return reject(err);
-        resolve({ stdout, stderr });
-      });
-    });
-    const data = JSON.parse(stdout);
-    return res.json(data);
+    const result = await runAgentWithFallback(message, chatModel);
+
+    if (!result.ok) {
+      if (result.rateLimited) {
+        return res.status(429).json({ error: "AI model rate limit reached — try again in a moment", code: "RATE_LIMITED" });
+      }
+      console.error("[api/chat/send]", result.err?.message, result.output);
+      return res.status(502).json({ error: "Failed to send message to agent" });
+    }
+
+    return res.json(result.data);
   } catch (err) {
     console.error("[api/chat/send]", err.message);
     return res.status(502).json({ error: "Failed to send message to agent" });
   } finally {
-    // Always reset back to Flash so the autonomous agent never uses a premium model
+    // Always reset back to the primary autonomous model after any user-requested switch
     if (needsModelSwitch) {
       runCmd(OPENCLAW_NODE, clawArgs(["models", "set", AUTONOMOUS_MODEL])).catch((err) => {
         console.warn(`[api/chat/send] failed to reset model to ${AUTONOMOUS_MODEL}:`, err.message);
@@ -1836,20 +1911,22 @@ app.post("/api/schedules/:id/run", requireSetupAuth, async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: "Schedule not found" });
   schedules[idx].lastRun = new Date().toISOString();
   await writeJsonFile(SCHEDULES_FILE(), schedules);
-  // Kick the agent gateway with the schedule's description as a message
-  try {
-    await fetch(`http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/api/agent/message`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-      },
-      body: JSON.stringify({ message: schedules[idx].description || schedules[idx].name }),
-    });
-  } catch (err) {
-    console.warn(`[schedules] Could not send to gateway: ${err.message}`);
+  // Run the schedule task through the agent with rate-limit fallback
+  const scheduleMessage = schedules[idx].description || schedules[idx].name;
+  const runResult = await runAgentWithFallback(scheduleMessage, AUTONOMOUS_MODEL).catch((err) => {
+    console.warn(`[schedules] runAgentWithFallback threw: ${err.message}`);
+    return { ok: false };
+  });
+
+  if (!runResult.ok) {
+    if (runResult.rateLimited) {
+      console.warn(`[schedules] Rate limited running schedule "${schedules[idx].name}" — will retry next trigger`);
+    } else {
+      console.warn(`[schedules] Agent error running schedule "${schedules[idx].name}"`);
+    }
   }
-  res.json({ ok: true, lastRun: schedules[idx].lastRun });
+
+  res.json({ ok: true, lastRun: schedules[idx].lastRun, agentOk: runResult.ok });
 });
 
 // ── Browser Mode Endpoints ─────────────────────────────────────────────────
