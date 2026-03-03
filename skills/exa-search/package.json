@@ -1,0 +1,9 @@
+{
+  "name": "@openclaw/exa-search",
+  "version": "1.0.0",
+  "description": "Exa.ai web search skill for OpenClaw agents",
+  "main": "index.js",
+  "keywords": ["exa", "web-search", "research", "openclaw", "skill"],
+  "author": "OpenClaw",
+  "license": "MIT"
+}

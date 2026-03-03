@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-RUN npm install -g openclaw@latest
+RUN npm install -g openclaw@latest exa-js
 
 WORKDIR /app
 
@@ -37,6 +37,7 @@ RUN corepack enable && pnpm install --frozen-lockfile --prod
 COPY scripts ./scripts
 COPY src ./src
 COPY entrypoint.sh ./entrypoint.sh
+COPY skills ./skills
 
 RUN useradd -m -s /bin/bash openclaw \
   && chown -R openclaw:openclaw /app \

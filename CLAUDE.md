@@ -110,6 +110,7 @@ open http://localhost:8080/setup  # password: test
 - `PORT` — wrapper HTTP port (default 8080)
 - `INTERNAL_GATEWAY_PORT` — gateway internal port (default 18789)
 - `OPENCLAW_ENTRY` — path to `entry.js` (default `/usr/local/lib/node_modules/openclaw/dist/entry.js`)
+- `EXA_API_KEY` — API key for Exa.ai web search (built-in skill)
 
 ### Authentication Flow
 
@@ -205,6 +206,19 @@ This project has been onboarded with **Serena** (semantic coding assistant via M
 4. Prefer symbolic editing (`replace_symbol_body`, `insert_after_symbol`) for precise modifications
 
 This avoids repeatedly reading large files and provides instant context about the project.
+
+## Built-in Skills
+
+The container includes pre-configured skills in `/app/skills/` that are automatically copied to each user's workspace:
+
+### exa-search
+Web search and content retrieval via Exa.ai API.
+- **Trigger phrases**: "search the web", "find information online", "web research"
+- **Requires**: `EXA_API_KEY` environment variable
+- **SDK**: `exa-js` (installed globally)
+- **Usage**: Set `EXA_API_KEY` in Railway env vars → agent can use web search automatically
+
+To get an API key: https://dashboard.exa.ai/api-keys (free tier: 100 requests/month)
 
 ## Quirks & Gotchas
 
