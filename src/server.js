@@ -1714,7 +1714,7 @@ async function processNextTask() {
       .join("\n\n");
 
     const result = await runAgentWithFallback(message, AUTONOMOUS_MODEL);
-    const finalStatus = result.ok ? "completed" : "failed";
+    const finalStatus = result.ok ? "done" : "failed";
 
     const finished = (await readJsonFile(TASKS_FILE())).map((t) =>
       t.id === pending.id ? { ...t, status: finalStatus, updatedAt: new Date().toISOString() } : t,
