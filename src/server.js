@@ -1683,6 +1683,65 @@ app.delete("/api/tasks/:id", requireSetupAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Task Runner ────────────────────────────────────────────────────────────
+// Polls for pending tasks and runs them one at a time through the agent.
+
+let taskRunnerBusy = false;
+
+async function processNextTask() {
+  if (taskRunnerBusy) return;
+  if (!isConfigured() || !isGatewayReady()) return;
+
+  const tasks = await readJsonFile(TASKS_FILE());
+  const hasActive = tasks.some((t) => t.status === "active");
+  if (hasActive) return; // let the current task finish
+
+  const pending = tasks.find((t) => t.status === "pending");
+  if (!pending) return;
+
+  taskRunnerBusy = true;
+
+  // Mark as active
+  const started = tasks.map((t) =>
+    t.id === pending.id ? { ...t, status: "active", updatedAt: new Date().toISOString() } : t,
+  );
+  await writeJsonFile(TASKS_FILE(), started);
+  console.log(`[task-runner] starting task ${pending.id}: ${pending.name}`);
+
+  try {
+    const message = [pending.name, pending.description, pending.context]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const result = await runAgentWithFallback(message, AUTONOMOUS_MODEL);
+    const finalStatus = result.ok ? "completed" : "failed";
+
+    const finished = (await readJsonFile(TASKS_FILE())).map((t) =>
+      t.id === pending.id ? { ...t, status: finalStatus, updatedAt: new Date().toISOString() } : t,
+    );
+    await writeJsonFile(TASKS_FILE(), finished);
+    console.log(`[task-runner] task ${pending.id} → ${finalStatus}`);
+  } catch (err) {
+    console.error(`[task-runner] task ${pending.id} threw: ${err.message}`);
+    const failed = (await readJsonFile(TASKS_FILE())).map((t) =>
+      t.id === pending.id ? { ...t, status: "failed", updatedAt: new Date().toISOString() } : t,
+    );
+    await writeJsonFile(TASKS_FILE(), failed);
+  } finally {
+    taskRunnerBusy = false;
+  }
+}
+
+function startTaskRunner() {
+  const POLL_MS = 15_000;
+  setInterval(
+    () => processNextTask().catch((err) => console.warn(`[task-runner] poll error: ${err.message}`)),
+    POLL_MS,
+  );
+  processNextTask().catch(() => {});
+  console.log(`[task-runner] started (poll every ${POLL_MS / 1000}s)`);
+}
+
 // ── Skills Endpoints ───────────────────────────────────────────────────────
 app.get("/api/skills/installed", requireSetupAuth, async (_req, res) => {
   const skillsDir = path.join(WORKSPACE_DIR, "skills");
@@ -1989,6 +2048,7 @@ const server = app.listen(PORT, () => {
         console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
       }
       await ensureGatewayRunning();
+      startTaskRunner();
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
     });
