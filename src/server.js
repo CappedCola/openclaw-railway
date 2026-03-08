@@ -1447,7 +1447,7 @@ app.post("/api/setup", requireSetupAuth, async (req, res) => {
     }
 
     // Set model
-    const model = (req.body?.model || process.env.OPENCLAW_MODEL || "google/gemini-2.5-flash").trim();
+    const model = (req.body?.model || process.env.OPENCLAW_MODEL || "openrouter/inception/mercury-2").trim();
     await runCmd(OPENCLAW_NODE, clawArgs(["models", "set", model]));
     console.log(`[api/setup] model set to ${model}`);
 
@@ -1471,9 +1471,9 @@ app.get("/api/chat/history", requireSetupAuth, async (req, res) => {
   }
 });
 
-const AUTONOMOUS_MODEL = "google/gemini-2.5-flash";
+const AUTONOMOUS_MODEL = process.env.OPENCLAW_MODEL || "openrouter/inception/mercury-2";
 // Fallback used when the primary model hits rate limits (429).
-// gemini-2.0-flash shares the same API key but has a separate quota bucket.
+// gemini-2.0-flash uses a separate provider/quota as a safety net.
 const FALLBACK_MODEL = "google/gemini-2.0-flash";
 
 /**
@@ -1549,9 +1549,10 @@ async function runAgentWithFallback(message, preferredModel) {
 
 // Map model prefixes to provider auth profile names + env var keys
 const PROVIDER_MAP = {
-  anthropic: { profile: "anthropic:default", envKey: "ANTHROPIC_API_KEY", mode: "token" },
-  openai:    { profile: "openai:default",    envKey: "OPENAI_API_KEY",    mode: "token" },
-  google:    { profile: "google:default",     envKey: "GEMINI_API_KEY",    mode: "token" },
+  anthropic:  { profile: "anthropic:default",  envKey: "ANTHROPIC_API_KEY",  mode: "token" },
+  openai:     { profile: "openai:default",     envKey: "OPENAI_API_KEY",     mode: "token" },
+  google:     { profile: "google:default",      envKey: "GEMINI_API_KEY",     mode: "token" },
+  openrouter: { profile: "openrouter:default", envKey: "OPENROUTER_API_KEY", mode: "token" },
 };
 
 /**
